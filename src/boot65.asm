@@ -19,6 +19,7 @@ SETNAM = $FFBD
 CLALL = $FFE7
 CHAROUT = $FFD2         ;kernal call for output character
 SCREEN_MODE = $FF5F     ;set screen mode
+I2C_WRITE_BYTE = $FEC9  ;write to I2C interface.
 
 ; Variables for BOOT65, BIOS65
 CMD = $2400
@@ -47,13 +48,28 @@ NO_Z80_TEXT:
 ; CP/M startup message.
 ;
 SIGNON:
-	!PET "booting...",13,0
+	!PET "booting ...",13,0
 
 BASIC_EXIT_TEXT:
 	!PET "cp/m boot process ended prematurely - exiting to basic",0
 
 RND_FNAME:
 	!PET "#"
+
+USER_TXT_STR:
+	!PET "U1:2 0 TT SS",13
+
+VECTAB:
+	!WORD SECRD     ;0 = sector read
+	!WORD SECWR     ;1 = sector write
+	!WORD KEYSC     ;2 = keyboard scan
+	!WORD OUTSC     ;3 = output to screen
+	!WORD PRNST     ;4 = get printer status
+	!WORD OUTPR     ;5 = output to printer
+	!WORD FORMAT    ;6 = format diskette
+	!WORD $0E00     ;7 = jump to addr at $0E00
+	!WORD $0F00     ;8 = jump to addr at $0F00
+	!WORD Z80JMP    ;9 = jump ($0906)
 
 START:
 	LDA $9F60       ;probe for Z80 processor board
@@ -102,6 +118,80 @@ FINAL_BOOT:
 	STA KYCHAR
 	JMP BIOS65      ;jump to BIOS65
 
+;
+; This is the CP/M BIOS for the X16.
+; Called from START after initialization.
+;
+BIOS65:
+	LDA #0          ;turn Z80 back on
+	STA MODESW
+	NOP             ;delay only
+	JSR EXZ80CMD    ;execute Z80 command if any
+	JMP BIOS65      ;and loop
+
+EXZ80CMD:
+	LDA CMD         ;get saved command
+	CMP #$FF        ;see if Z80 active
+	BNE TRYEXEC     ;if so try to execute
+	JMP RESETX16    ;else RESET the X16
+
+TRYEXEC:
+	CMP #10         ;see if 0 to 9
+	BCC ADDCMD      ;it is so execute else ignore
+	RTS
+
+ADDCMD:
+	CLD             ;clear decimal flag
+	CLC             ;and then carry
+	ADC CMD         ;A was CMD so A now = 2 x CMD
+	ADC #<VECTAB    ;add low byte of table
+	STA JMPVEC+1    ;modify jump vector
+JMPVEC:	JMP (VECTAB)    ;then go execute
+Z80JMP:	JMP ($0906)     ;indirect jump set by Z80
+
+;function 0 - read sector
+SECRD:
+	LDA #'1'        ;"1" in "U1"
+	JSR SETUSER     ;set up USER 1 mode
+	JSR RDCH2       ;set up read from LA 2
+	LDX #0          ;do full 256 bytes
+SECRD1:	JSR BASIN       ;input from channel
+	STA HSTBUF,X    ;& put in host buffer
+	INX             ;go to next
+	BNE SECRD1      ;loop if more
+	BEQ RSTDEFCH    ;exit by restoring default channel
+SECRD2:	JSR INITDSK     ;initialize diskette
+
+;function 1 - write sector
+SECWR:
+	JSR WRCMDCH     ;set up to write to command channel
+	LDY #8          ;8 characters
+SECWR1:	LDA BLKCMD,X    ;send block command
+	JSR BSOUT       ;output to channel
+	INX
+	DEY
+	BNE SECWR1
+	JSR CLRCH       ;restore default channel
+	JSR INCMDCH     ;read command results
+	BNE SECRD2      ;error so initialize
+	JSR CLRCH       ;restore default channel
+	JSR WRCH2       ;set up write to channel 2
+	LDX #0
+SECWR2:	LDA HSTBUF,X    ;get byte from buffer
+	JSR BSOUT       ;output to channel
+	INX
+	BNE SECWR2      ;loop until all 256 written
+	JSR CLRCH       ;restore default channel
+	LDA #'2'        ;"2" in "U2", block write
+	BNE SETUSER     ;go do block write
+
+;function 2 - keyboard scan
+KEYSC:
+	JSR KEY         ;scan keyboard
+	LDA LSTX        ;get current key pressed
+	STA KYCHAR      ;save in register
+	RTS
+
 ;This routine displays the starting message with
 ;version number.
 LOAD_MSG:
@@ -137,9 +227,11 @@ EX2:	JSR CHAROUT
 	INX
 	JMP EX1
 
-;
-; This is the CP/M BIOS for the X16.
-; Called from START after initialization.
-;
-BIOS65:
-
+;This routine performs a hard reset of the X16.
+RESETX16:
+	LDA #$01        ;value
+	LDX #$42        ;I2C device (SMC)
+	LDY #$01        ;register
+	JSR I2C_WRITE_BYTE
+	BCS RSTERR      ;the X16 should instantly reboot
+RSTERR:	RTS             ;we shouldn't get here
