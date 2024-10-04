@@ -45,31 +45,16 @@ NO_Z80_TEXT:
 	!PET "the x16, then run this program again.",13,0
 
 ;
-; CP/M startup message.
+; BOOT65 startup message.
 ;
 SIGNON:
-	!PET "booting ...",13,0
+	!PET "boot65 vsn 1.0 - 4 oct 2024 (commander x16)",13,0
 
 BASIC_EXIT_TEXT:
 	!PET "cp/m boot process ended prematurely - exiting to basic",0
 
 RND_FNAME:
 	!PET "#"
-
-USER_TXT_STR:
-	!PET "U1:2 0 TT SS",13
-
-VECTAB:
-	!WORD SECRD     ;0 = sector read
-	!WORD SECWR     ;1 = sector write
-	!WORD KEYSC     ;2 = keyboard scan
-	!WORD OUTSC     ;3 = output to screen
-	!WORD PRNST     ;4 = get printer status
-	!WORD OUTPR     ;5 = output to printer
-	!WORD FORMAT    ;6 = format diskette
-	!WORD $0E00     ;7 = jump to addr at $0E00
-	!WORD $0F00     ;8 = jump to addr at $0F00
-	!WORD Z80JMP    ;9 = jump ($0906)
 
 START:
 	LDA $9F60       ;probe for Z80 processor board
@@ -112,12 +97,46 @@ FINAL_BOOT:
 	JSR CHAROUT     ;output to channel
 	LDA #13         ;return & do line feed
 	JSR CHAROUT     ;output to channel
-	LDA #$FF        ;set up Z80 command register command (BIOS65 uses it)
+	LDA #$FF        ;set up Z80 command register (BIOS65 uses it)
 	STA CMD
 	LDA #$28        ;set up key code
 	STA KYCHAR
 	JMP BIOS65      ;jump to BIOS65
 
+;This routine displays the starting message with
+;version number.
+LOAD_MSG:
+	LDX #0
+LMT0:	LDA SIGNON,X
+	CMP #0
+	BNE LMT1
+	RTS
+LMT1:	JSR CHAROUT
+	INX
+	JMP LMT0
+
+;This routine displays the error message when
+;the Z80 processor board is not installed.
+NO_Z80:
+	LDX #0
+NZ801:	LDA NO_Z80_TEXT,X
+	CMP #0
+	BNE NZ802
+	JSR EXIT_TO_BASIC
+	RTS
+NZ802:	JSR CHAROUT
+	INX
+	JMP NZ801
+
+EXIT_TO_BASIC:
+	LDX #0
+EX1:	LDA BASIC_EXIT_TEXT,X
+	CMP #0
+	BNE EX2
+	RTS
+EX2:	JSR CHAROUT
+	INX
+	JMP EX1
 ;
 ; This is the CP/M BIOS for the X16.
 ; Called from START after initialization.
@@ -135,6 +154,15 @@ EXZ80CMD:
 	BNE TRYEXEC     ;if so try to execute
 	JMP RESETX16    ;else RESET the X16
 
+;This routine performs a hard reset of the X16.
+RESETX16:
+	LDA #$01        ;value
+	LDX #$42        ;I2C device (SMC)
+	LDY #$01        ;register
+	JSR I2C_WRITE_BYTE
+	BCS RSTERR      ;the X16 should instantly reboot
+RSTERR:	RTS             ;we shouldn't get here
+
 TRYEXEC:
 	CMP #10         ;see if 0 to 9
 	BCC ADDCMD      ;it is so execute else ignore
@@ -147,6 +175,16 @@ ADDCMD:
 	ADC #<VECTAB    ;add low byte of table
 	STA JMPVEC+1    ;modify jump vector
 JMPVEC:	JMP (VECTAB)    ;then go execute
+VECTAB:	!WORD SECRD     ;0 = sector read
+	!WORD SECWR     ;1 = sector write
+	!WORD KEYSC     ;2 = keyboard scan
+	!WORD OUTSC     ;3 = output to screen
+	!WORD PRNST     ;4 = get printer status
+	!WORD OUTPR     ;5 = output to printer
+	!WORD FORMAT    ;6 = format diskette
+	!WORD $0E00     ;7 = jump to addr at $0E00
+	!WORD $0F00     ;8 = jump to addr at $0F00
+	!WORD Z80JMP    ;9 = jump ($0906)
 Z80JMP:	JMP ($0906)     ;indirect jump set by Z80
 
 ;function 0 - read sector
@@ -192,46 +230,22 @@ KEYSC:
 	STA KYCHAR      ;save in register
 	RTS
 
-;This routine displays the starting message with
-;version number.
-LOAD_MSG:
-	LDX #0
-LMT0:	LDA SIGNON,X
-	CMP #0
-	BNE LMT1
-	RTS
-LMT1:	JSR CHAROUT
-	INX
-	JMP LMT0
+;function 3 - output to screen
+OUTSC:
+	LDA #0         ;set editor to
+	STA QTSW       ;not in quote mode
+	LDA DATA       ;get character
+	JMP CHAROUT    ;output to channel
 
-;This routine displays the error message when
-;the Z80 processor board is not installed.
-NO_Z80:
-	LDX #0
-NZ801:	LDA NO_Z80_TEXT,X
-	CMP #0
-	BNE NZ802
-	JSR EXIT_TO_BASIC
-	RTS
-NZ802:	JSR CHAROUT
-	INX
-	JMP NZ801
+;function 4 - get printer status
+PRNST:
+	LDA #0         ;always
+	STA DATA       ;OK
 
-EXIT_TO_BASIC:
-	LDX #0
-EX1:	LDA BASIC_EXIT_TEXT,X
-	CMP #0
-	BNE EX2
-	RTS
-EX2:	JSR CHAROUT
-	INX
-	JMP EX1
+;function 5 - send character to printer
+OUTPR:
+	LDA DATA       ;get character
+	CMP #10        ;see if line feed
 
-;This routine performs a hard reset of the X16.
-RESETX16:
-	LDA #$01        ;value
-	LDX #$42        ;I2C device (SMC)
-	LDY #$01        ;register
-	JSR I2C_WRITE_BYTE
-	BCS RSTERR      ;the X16 should instantly reboot
-RSTERR:	RTS             ;we shouldn't get here
+USER_TXT_STR:
+	!PET "U1:2 0 TT SS",13
